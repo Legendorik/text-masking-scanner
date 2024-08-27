@@ -28,6 +28,7 @@ class _MyAppState extends State<MyApp> {
           onDetect: (barcodes) {},
           // scanDelay: const Duration(milliseconds: 50),
           // scanDelaySuccess: const Duration(milliseconds: 500),
+          useMorph: true,
           formats: const [BarcodeFormat.dataMatrix],
           onControllerCreated: (controller) => log('controller $controller'),
         ),

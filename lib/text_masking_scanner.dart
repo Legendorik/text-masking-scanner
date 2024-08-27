@@ -8,11 +8,12 @@ import 'package:text_masking_scanner/camera_view.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 export 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart'
-    show BarcodeFormat;
+    show BarcodeFormat, Barcode;
 
 class TextMaskingScanner extends StatefulWidget {
   const TextMaskingScanner({
     required this.onDetect,
+    this.useMorph = false,
     this.scanDelay,
     this.scanDelaySuccess,
     this.formats,
@@ -21,6 +22,7 @@ class TextMaskingScanner extends StatefulWidget {
   });
 
   final void Function(List<Barcode> barcodes) onDetect;
+  final bool useMorph;
   final Duration? scanDelay;
   final Duration? scanDelaySuccess;
   final List<BarcodeFormat>? formats;
@@ -87,8 +89,9 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
       stopwatch.start();
 
       // Передаем в сканер изображение со скрытым текстом каждый третий кадр, чтобы увеличить производительность
-      final imageForScan =
-          frame % 3 == 0 ? await morphImage(inputImage) : inputImage;
+      final imageForScan = frame % 3 == 0 && widget.useMorph
+          ? await morphImage(inputImage)
+          : inputImage;
 
       //Для просмотра изображения, прошедшего через все конвертации
       if (frame % 3 == 0) {
