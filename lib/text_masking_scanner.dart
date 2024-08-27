@@ -10,6 +10,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:path_provider/path_provider.dart';
 import 'package:text_masking_scanner/painters/coordinates_translator.dart';
 import 'package:text_masking_scanner/camera_view.dart';
+import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 import 'painters/text_detector_painter.dart';
 
@@ -145,7 +146,8 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
   }
 
   Future<InputImage> maskTextOnImage(InputImage inputImage) async {
-    final recognizedText = await _textRecognizer.processImage(inputImage);
+    // final recognizedText = await _textRecognizer.processImage(inputImage);
+    final recognizedText = RecognizedText(text: '', blocks: []);
     // Отображает найденный на кадре текст. Неравнозначен маскировщику текста в _removeTexts
     // Не синхронизирован с изображением с камеры, так как срабатывает раз в три кадра, так что могут быть небольшие различия, если устройство не статично.
     // Чтобы посмотреть, как именно замазался текст на изображении, нужно раскомментировать вывод изображения после конвертаций
@@ -157,11 +159,21 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
       _cameraLensDirection,
     ));
     final maskedImage = await _removeTexts(inputImage, recognizedText);
+    // imglib.Image.fromBytes(width: width, height: height, bytes: bytes) перебрать байты, чтобы убрать альфаканал?
+    // final imageCv = cv.Mat.create()
+    final jpg = imglib.encodeJpg(maskedImage);
+    final cvMat = cv.imdecode(jpg, cv.IMREAD_GRAYSCALE);
+    final kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5));
+    // final dilated = cv.dilate(cvMat, kernel, iterations: 1);
+    final closed =
+        cv.morphologyEx(cvMat, cv.MORPH_CLOSE, kernel, iterations: 2);
+    final jpgFromCv = cv.imencode('.jpg', closed);
+    final morphedImage = imglib.decodeJpg(jpgFromCv.$2)!;
     // Конвертируем обратно для поиска баркодов
     final convertedMaskedImage =
         inputImage.metadata!.format == InputImageFormat.nv21
-            ? rgbToYuv420(maskedImage)
-            : rgbToBgr(maskedImage);
+            ? rgbToYuv420(morphedImage)
+            : rgbToBgr(morphedImage);
 
     final maskedInputImage = InputImage.fromBytes(
         bytes: convertedMaskedImage.buffer.asUint8List(),
@@ -350,6 +362,7 @@ imglib.Image decodeBGRA8888(InputImage image) {
     width: image.metadata!.size.width.toInt(),
     height: image.metadata!.size.height.toInt(),
     bytes: image.bytes!.buffer,
+    // numChannels: 4,??
     order: imglib.ChannelOrder.bgra,
   );
 }
