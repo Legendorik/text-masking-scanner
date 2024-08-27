@@ -1,64 +1,58 @@
-import 'dart:convert';
 import 'dart:developer';
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
 import 'package:image/image.dart' as imglib;
 import 'package:flutter/material.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:text_masking_scanner/painters/coordinates_translator.dart';
 import 'package:text_masking_scanner/camera_view.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
-import 'painters/text_detector_painter.dart';
+export 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart'
+    show BarcodeFormat;
 
 class TextMaskingScanner extends StatefulWidget {
-  const TextMaskingScanner({required this.onBarcodes, super.key});
+  const TextMaskingScanner({
+    required this.onDetect,
+    this.scanDelay,
+    this.scanDelaySuccess,
+    this.formats,
+    this.onControllerCreated,
+    super.key,
+  });
 
-  final void Function(List<Barcode> barcodes) onBarcodes;
+  final void Function(List<Barcode> barcodes) onDetect;
+  final Duration? scanDelay;
+  final Duration? scanDelaySuccess;
+  final List<BarcodeFormat>? formats;
+  final Function(CameraController? controller)? onControllerCreated;
 
   @override
   State<TextMaskingScanner> createState() => _TextMaskingScannerState();
 }
 
 class _TextMaskingScannerState extends State<TextMaskingScanner> {
-  final _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
   bool _canProcess = true;
   bool _isBusy = false;
   CustomPaint? _customPaint;
   Uint8List? _processedImage;
   var _cameraLensDirection = CameraLensDirection.back;
-  static const List<BarcodeFormat> formats = [BarcodeFormat.dataMatrix];
-  final barcodeScanner = BarcodeScanner(formats: formats);
-  final stopwatch = Stopwatch();
-  final stats = <String, List<Map<String, String>>>{};
+  late final BarcodeScanner barcodeScanner;
   int frame = 0;
+
+  static const _optimize = false;
+
+  @override
+  void initState() {
+    super.initState();
+    barcodeScanner =
+        BarcodeScanner(formats: widget.formats ?? [BarcodeFormat.all]);
+  }
 
   @override
   void dispose() async {
     _canProcess = false;
-    _textRecognizer.close();
     barcodeScanner.close();
     super.dispose();
-  }
-
-  // Запись результатов замеров
-  void watchTap() async {
-    if (stopwatch.isRunning) {
-      stopwatch.stop();
-      stopwatch.reset();
-      setState(() {});
-      final jsonString = jsonEncode(stats);
-      final Directory directory = await getApplicationDocumentsDirectory();
-      final File file = File('${directory.path}/default_scanner.json');
-      await file.writeAsString(jsonString);
-    } else {
-      stats[stats.length.toString()] = [];
-      stopwatch.start();
-      setState(() {});
-    }
   }
 
   @override
@@ -70,6 +64,7 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
           onImage: _processImage,
           initialCameraLensDirection: _cameraLensDirection,
           onCameraLensDirectionChanged: (value) => _cameraLensDirection = value,
+          onControllerCreated: widget.onControllerCreated,
         ),
         // Изображение, получаемое после конвертаций. Для дебага
         if (_processedImage != null)
@@ -77,28 +72,6 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
             padding: const EdgeInsets.only(top: 50),
             child: Opacity(opacity: 1, child: Image.memory(_processedImage!)),
           ),
-        Positioned(
-          bottom: 50,
-          left: 0,
-          right: 0,
-          child: GestureDetector(
-            onTap: watchTap,
-            child: Container(
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: Colors.black54,
-                borderRadius: BorderRadius.circular(10.0),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Text(
-                  stopwatch.isRunning ? 'Закончить замер' : 'Начать замер',
-                  style: const TextStyle(color: Colors.white),
-                ),
-              ),
-            ),
-          ),
-        ),
       ]),
     );
   }
@@ -110,10 +83,12 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
     if (inputImage.metadata?.size != null &&
         inputImage.metadata?.rotation != null) {
       frame += 1;
+      final stopwatch = Stopwatch();
+      stopwatch.start();
 
       // Передаем в сканер изображение со скрытым текстом каждый третий кадр, чтобы увеличить производительность
       final imageForScan =
-          frame % 3 == 0 ? await maskTextOnImage(inputImage) : inputImage;
+          frame % 3 == 0 ? await morphImage(inputImage) : inputImage;
 
       //Для просмотра изображения, прошедшего через все конвертации
       if (frame % 3 == 0) {
@@ -122,58 +97,86 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
         //         ? decodeYUV420SP(imageForScan)
         //         : decodeBGRA8888(imageForScan);
         // _processedImage = imglib.encodeJpg(rawTestRgbaImage);
+        // setState(() {});
       }
 
       final barcodes = await barcodeScanner.processImage(imageForScan);
       log('Frame without barcodes');
       if (barcodes.isNotEmpty) {
-        widget.onBarcodes(barcodes);
+        widget.onDetect(barcodes);
         bool isClearedScan = frame % 3 == 0;
         frame = 0;
         log('RECOGNIZE ${isClearedScan ? 'from masked scan' : ''}: ${barcodes.first.displayValue} ${barcodes.first.format}');
-        if (stopwatch.isRunning) {
-          stats[(stats.length - 1).toString()]!.add({
-            'code': barcodes.first.displayValue ?? '',
-            'time': stopwatch.elapsed.toString()
-          });
+        if (widget.scanDelaySuccess != null) {
+          await Future.delayed(widget.scanDelaySuccess!);
+        }
+      } else {
+        if (widget.scanDelay != null) {
+          await Future.delayed(widget.scanDelay!);
         }
       }
+      stopwatch.stop();
+      // log('elapsed: ${stopwatch.elapsed.inMilliseconds} ms');
     }
     _isBusy = false;
-    if (mounted) {
-      setState(() {});
-    }
   }
 
-  Future<InputImage> maskTextOnImage(InputImage inputImage) async {
-    // final recognizedText = await _textRecognizer.processImage(inputImage);
-    final recognizedText = RecognizedText(text: '', blocks: []);
-    // Отображает найденный на кадре текст. Неравнозначен маскировщику текста в _removeTexts
-    // Не синхронизирован с изображением с камеры, так как срабатывает раз в три кадра, так что могут быть небольшие различия, если устройство не статично.
-    // Чтобы посмотреть, как именно замазался текст на изображении, нужно раскомментировать вывод изображения после конвертаций
-    _customPaint = CustomPaint(
-        painter: TextRecognizerPainter(
-      recognizedText,
-      inputImage.metadata!.size,
-      inputImage.metadata!.rotation,
-      _cameraLensDirection,
-    ));
-    final maskedImage = await _removeTexts(inputImage, recognizedText);
-    // imglib.Image.fromBytes(width: width, height: height, bytes: bytes) перебрать байты, чтобы убрать альфаканал?
-    // final imageCv = cv.Mat.create()
-    final jpg = imglib.encodeJpg(maskedImage);
-    final cvMat = cv.imdecode(jpg, cv.IMREAD_GRAYSCALE);
-    final kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5));
-    // final dilated = cv.dilate(cvMat, kernel, iterations: 1);
-    final closed =
-        cv.morphologyEx(cvMat, cv.MORPH_CLOSE, kernel, iterations: 2);
-    final jpgFromCv = cv.imencode('.jpg', closed);
-    final morphedImage = imglib.decodeJpg(jpgFromCv.$2)!;
+  Future<InputImage> morphImage(InputImage inputImage) async {
+    final maskedImage = await _convertImage(inputImage);
+    late final imglib.Image resultImage;
+
+    if (_optimize) {
+      final cvMat = cv.Mat.create(
+        rows: maskedImage.width,
+        cols: maskedImage.height,
+        type: cv.MatType.CV_8UC3,
+      );
+      cvMat.data
+          .setAll(0, maskedImage.getBytes(order: imglib.ChannelOrder.bgr));
+      final cvGrayMat = cv.cvtColor(cvMat, cv.COLOR_BGR2GRAY);
+      final kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5));
+      final closed =
+          cv.morphologyEx(cvGrayMat, cv.MORPH_CLOSE, kernel, iterations: 2);
+
+      final closedBgr = cv.cvtColor(closed, cv.COLOR_GRAY2BGR);
+
+      final bgrImageAfterMat = imglib.Image.fromBytes(
+        width: maskedImage.width,
+        height: maskedImage.height,
+        bytes: closedBgr.data.buffer,
+        numChannels: 3,
+        order: imglib.ChannelOrder.bgr,
+      );
+
+      final rgbaImage = imglib.Image.fromBytes(
+        width: maskedImage.width,
+        height: maskedImage.height,
+        bytes: bgrImageAfterMat
+            .getBytes(order: imglib.ChannelOrder.rgba, alpha: 1)
+            .buffer,
+        numChannels: 4,
+        order: imglib.ChannelOrder.rgba,
+      );
+
+      resultImage = rgbaImage;
+    } else {
+      final jpg = imglib.encodeJpg(maskedImage);
+      final cvMat = cv.imdecode(jpg, cv.IMREAD_GRAYSCALE);
+      final kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5));
+      final closed =
+          cv.morphologyEx(cvMat, cv.MORPH_CLOSE, kernel, iterations: 2);
+      final jpgFromCv = cv.imencode('.jpg', closed);
+      final morphedImage = imglib.decodeJpg(jpgFromCv.$2)!;
+
+      resultImage = morphedImage;
+    }
+
     // Конвертируем обратно для поиска баркодов
+
     final convertedMaskedImage =
         inputImage.metadata!.format == InputImageFormat.nv21
-            ? rgbToYuv420(morphedImage)
-            : rgbToBgr(morphedImage);
+            ? rgbaToYuv420(resultImage)
+            : rgbaToBgr(resultImage);
 
     final maskedInputImage = InputImage.fromBytes(
         bytes: convertedMaskedImage.buffer.asUint8List(),
@@ -190,131 +193,21 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
                 ),
           rotation: InputImageRotation.rotation0deg,
           format: inputImage.metadata!.format,
-          bytesPerRow: 4,
+          bytesPerRow: inputImage.metadata?.bytesPerRow ?? 0, //4 // ??
         ));
     return maskedInputImage;
   }
 
-  Future<imglib.Image> _removeTexts(
-      InputImage inputImage, RecognizedText recognizedText) async {
+  Future<imglib.Image> _convertImage(InputImage inputImage) async {
     final rawRgbaImage = inputImage.metadata!.format == InputImageFormat.nv21
         ? decodeYUV420SP(inputImage) //android
         : decodeBGRA8888(inputImage); //ios
 
-    final imageSize = inputImage.metadata!.size;
-    final size =
-        inputImage.metadata!.rotation != InputImageRotation.rotation0deg
-            ? Size(
-                inputImage.metadata!.size.height,
-                inputImage.metadata!.size.width,
-              )
-            : Size(
-                inputImage.metadata!.size.width,
-                inputImage.metadata!.size.height,
-              );
-
-    final rotation = inputImage.metadata!.rotation;
-
-    for (final textBlock in recognizedText.blocks) {
-      // Слишком толстые блоки -- это обычно лишний текст, который нет необходимости маскировать, и который может заслонять код
-      if (textBlock.boundingBox.shortestSide < 120) {
-        final List<Offset> cornerPoints = <Offset>[];
-        for (final point in textBlock.cornerPoints) {
-          double x = translateX(
-            point.x.toDouble(),
-            size,
-            imageSize,
-            rotation,
-            _cameraLensDirection,
-          );
-          double y = translateY(
-            point.y.toDouble(),
-            size,
-            imageSize,
-            rotation,
-            _cameraLensDirection,
-          );
-
-          if (Platform.isAndroid) {
-            switch (_cameraLensDirection) {
-              case CameraLensDirection.front:
-                switch (rotation) {
-                  case InputImageRotation.rotation0deg:
-                  case InputImageRotation.rotation90deg:
-                    break;
-                  case InputImageRotation.rotation180deg:
-                    x = size.width - x;
-                    y = size.height - y;
-                    break;
-                  case InputImageRotation.rotation270deg:
-                    x = translateX(
-                      point.y.toDouble(),
-                      size,
-                      imageSize,
-                      rotation,
-                      _cameraLensDirection,
-                    );
-                    y = size.height -
-                        translateY(
-                          point.x.toDouble(),
-                          size,
-                          imageSize,
-                          rotation,
-                          _cameraLensDirection,
-                        );
-                    break;
-                }
-                break;
-              case CameraLensDirection.back:
-                switch (rotation) {
-                  case InputImageRotation.rotation0deg:
-                  case InputImageRotation.rotation270deg:
-                    break;
-                  case InputImageRotation.rotation180deg:
-                    x = size.width - x;
-                    y = size.height - y;
-                    break;
-                  case InputImageRotation.rotation90deg:
-                    x = size.width -
-                        translateX(
-                          point.y.toDouble(),
-                          size,
-                          imageSize,
-                          rotation,
-                          _cameraLensDirection,
-                        );
-                    y = translateY(
-                      point.x.toDouble(),
-                      size,
-                      imageSize,
-                      rotation,
-                      _cameraLensDirection,
-                    );
-                    break;
-                }
-                break;
-              case CameraLensDirection.external:
-                break;
-            }
-          }
-
-          cornerPoints.add(Offset(x, y));
-        }
-
-        // Add the first point to close the polygon
-        cornerPoints.add(cornerPoints.first);
-        imglib.fillPolygon(
-          rawRgbaImage,
-          vertices: [for (final p in cornerPoints) imglib.Point(p.dx, p.dy)],
-          color: imglib.ColorRgb8(255, 255, 255),
-        );
-      }
-    }
     return rawRgbaImage;
   }
 }
 
-Uint8List rgbToYuv420(imglib.Image image) {
+Uint8List rgbaToYuv420(imglib.Image image) {
   int yIndex = 0;
 
   final width = image.width;
@@ -348,7 +241,7 @@ Uint8List rgbToYuv420(imglib.Image image) {
   return yuvPlane;
 }
 
-Uint8List rgbToBgr(imglib.Image image) {
+Uint8List rgbaToBgr(imglib.Image image) {
   final bgraImage = imglib.remapColors(
     image,
     red: imglib.Channel.blue,
@@ -362,7 +255,7 @@ imglib.Image decodeBGRA8888(InputImage image) {
     width: image.metadata!.size.width.toInt(),
     height: image.metadata!.size.height.toInt(),
     bytes: image.bytes!.buffer,
-    // numChannels: 4,??
+    numChannels: 4,
     order: imglib.ChannelOrder.bgra,
   );
 }

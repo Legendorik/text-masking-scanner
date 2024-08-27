@@ -1,3 +1,5 @@
+import 'dart:developer';
+
 import 'package:flutter/material.dart';
 import 'package:text_masking_scanner/text_masking_scanner.dart';
 
@@ -23,7 +25,11 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       home: Scaffold(
         body: TextMaskingScanner(
-          onBarcodes: (barcodes) {},
+          onDetect: (barcodes) {},
+          // scanDelay: const Duration(milliseconds: 50),
+          // scanDelaySuccess: const Duration(milliseconds: 500),
+          formats: const [BarcodeFormat.dataMatrix],
+          onControllerCreated: (controller) => log('controller $controller'),
         ),
       ),
     );
