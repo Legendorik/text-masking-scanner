@@ -24,6 +24,7 @@ class _MyAppState extends State<MyApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       home: Scaffold(
+        backgroundColor: Colors.white,
         body: TextMaskingScanner(
           onDetect: (barcodes) {},
           // scanDelay: const Duration(milliseconds: 50),

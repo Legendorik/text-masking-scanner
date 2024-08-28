@@ -1,6 +1,7 @@
 import 'dart:developer';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
 import 'package:image/image.dart' as imglib;
 import 'package:flutter/material.dart';
@@ -40,8 +41,6 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
   var _cameraLensDirection = CameraLensDirection.back;
   late final BarcodeScanner barcodeScanner;
   int frame = 0;
-
-  static const _optimize = false;
 
   @override
   void initState() {
@@ -90,7 +89,8 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
 
       // Передаем в сканер изображение со скрытым текстом каждый третий кадр, чтобы увеличить производительность
       final imageForScan = frame % 3 == 0 && widget.useMorph
-          ? await morphImage(inputImage)
+          // ? await morphImage(inputImage)
+          ? await compute(morphImage, inputImage)
           : inputImage;
 
       //Для просмотра изображения, прошедшего через все конвертации
@@ -123,91 +123,69 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
     }
     _isBusy = false;
   }
+}
 
-  Future<InputImage> morphImage(InputImage inputImage) async {
-    final maskedImage = await _convertImage(inputImage);
-    late final imglib.Image resultImage;
+Future<imglib.Image> convertImage(InputImage inputImage) async {
+  final rawRgbaImage = inputImage.metadata!.format == InputImageFormat.nv21
+      ? decodeYUV420SP(inputImage) //android
+      : decodeBGRA8888(inputImage); //ios
 
-    if (_optimize) {
-      final cvMat = cv.Mat.create(
-        rows: maskedImage.width,
-        cols: maskedImage.height,
-        type: cv.MatType.CV_8UC3,
-      );
-      cvMat.data
-          .setAll(0, maskedImage.getBytes(order: imglib.ChannelOrder.bgr));
-      final cvGrayMat = cv.cvtColor(cvMat, cv.COLOR_BGR2GRAY);
-      final kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5));
-      final closed =
-          cv.morphologyEx(cvGrayMat, cv.MORPH_CLOSE, kernel, iterations: 2);
+  return rawRgbaImage;
+}
 
-      final closedBgr = cv.cvtColor(closed, cv.COLOR_GRAY2BGR);
+Future<InputImage> morphImage(InputImage inputImage) async {
+  final maskedImage = await convertImage(inputImage);
+  final imageSize =
+      inputImage.metadata!.rotation == InputImageRotation.rotation90deg ||
+              inputImage.metadata!.rotation == InputImageRotation.rotation270deg
+          ? Size(
+              inputImage.metadata!.size.height,
+              inputImage.metadata!.size.width,
+            )
+          : Size(
+              inputImage.metadata!.size.width,
+              inputImage.metadata!.size.height,
+            );
 
-      final bgrImageAfterMat = imglib.Image.fromBytes(
-        width: maskedImage.width,
-        height: maskedImage.height,
-        bytes: closedBgr.data.buffer,
-        numChannels: 3,
-        order: imglib.ChannelOrder.bgr,
-      );
+  final cvMat = cv.Mat.create(
+    cols: imageSize.width.toInt(),
+    rows: imageSize.height.toInt(),
+    type: cv.MatType.CV_8UC4,
+  );
+  cvMat.data.setAll(0, maskedImage.getBytes(order: imglib.ChannelOrder.bgra));
 
-      final rgbaImage = imglib.Image.fromBytes(
-        width: maskedImage.width,
-        height: maskedImage.height,
-        bytes: bgrImageAfterMat
-            .getBytes(order: imglib.ChannelOrder.rgba, alpha: 1)
-            .buffer,
-        numChannels: 4,
-        order: imglib.ChannelOrder.rgba,
-      );
+  final cvGrayMat = cv.cvtColor(cvMat, cv.COLOR_BGRA2GRAY);
+  final kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5));
 
-      resultImage = rgbaImage;
-    } else {
-      final jpg = imglib.encodeJpg(maskedImage);
-      final cvMat = cv.imdecode(jpg, cv.IMREAD_GRAYSCALE);
-      final kernel = cv.getStructuringElement(cv.MORPH_RECT, (5, 5));
-      final closed =
-          cv.morphologyEx(cvMat, cv.MORPH_CLOSE, kernel, iterations: 2);
-      final jpgFromCv = cv.imencode('.jpg', closed);
-      final morphedImage = imglib.decodeJpg(jpgFromCv.$2)!;
+  final closed =
+      cv.morphologyEx(cvGrayMat, cv.MORPH_CLOSE, kernel, iterations: 2);
+  final closedRgba = cv.cvtColor(closed, cv.COLOR_GRAY2RGBA);
 
-      resultImage = morphedImage;
-    }
+  final rgbaImage = imglib.Image.fromBytes(
+    width: imageSize.width.toInt(),
+    height: imageSize.height.toInt(),
+    bytes: closedRgba.data.buffer,
+    numChannels: 4,
+    order: imglib.ChannelOrder.rgba,
+  );
 
-    // Конвертируем обратно для поиска баркодов
+  // Конвертируем обратно для поиска баркодов
 
-    final convertedMaskedImage =
-        inputImage.metadata!.format == InputImageFormat.nv21
-            ? rgbaToYuv420(resultImage)
-            : rgbaToBgr(resultImage);
+  final convertedMaskedImage =
+      inputImage.metadata!.format == InputImageFormat.nv21
+          ? rgbaToYuv420(rgbaImage)
+          : rgbaToBgra(rgbaImage);
 
-    final maskedInputImage = InputImage.fromBytes(
-        bytes: convertedMaskedImage.buffer.asUint8List(),
-        // Изображение с камеры андроида приходит повернутым. Но после обработки уже все развернуто
-        metadata: InputImageMetadata(
-          size: inputImage.metadata!.rotation != InputImageRotation.rotation0deg
-              ? Size(
-                  inputImage.metadata!.size.height,
-                  inputImage.metadata!.size.width,
-                )
-              : Size(
-                  inputImage.metadata!.size.width,
-                  inputImage.metadata!.size.height,
-                ),
-          rotation: InputImageRotation.rotation0deg,
-          format: inputImage.metadata!.format,
-          bytesPerRow: inputImage.metadata?.bytesPerRow ?? 0, //4 // ??
-        ));
-    return maskedInputImage;
-  }
-
-  Future<imglib.Image> _convertImage(InputImage inputImage) async {
-    final rawRgbaImage = inputImage.metadata!.format == InputImageFormat.nv21
-        ? decodeYUV420SP(inputImage) //android
-        : decodeBGRA8888(inputImage); //ios
-
-    return rawRgbaImage;
-  }
+  final maskedInputImage = InputImage.fromBytes(
+      bytes: convertedMaskedImage.buffer.asUint8List(),
+      // Изображение с камеры андроида приходит повернутым. Но после обработки уже все развернуто
+      metadata: InputImageMetadata(
+        size: imageSize,
+        rotation: InputImageRotation.rotation0deg,
+        format: inputImage.metadata!.format,
+        bytesPerRow: inputImage.metadata?.bytesPerRow ?? 0, //4 // ??
+      ));
+  return maskedInputImage;
 }
 
 Uint8List rgbaToYuv420(imglib.Image image) {
@@ -244,7 +222,7 @@ Uint8List rgbaToYuv420(imglib.Image image) {
   return yuvPlane;
 }
 
-Uint8List rgbaToBgr(imglib.Image image) {
+Uint8List rgbaToBgra(imglib.Image image) {
   final bgraImage = imglib.remapColors(
     image,
     red: imglib.Channel.blue,
@@ -254,13 +232,24 @@ Uint8List rgbaToBgr(imglib.Image image) {
 }
 
 imglib.Image decodeBGRA8888(InputImage image) {
-  return imglib.Image.fromBytes(
-    width: image.metadata!.size.width.toInt(),
-    height: image.metadata!.size.height.toInt(),
-    bytes: image.bytes!.buffer,
-    numChannels: 4,
-    order: imglib.ChannelOrder.bgra,
-  );
+  return imglib.copyRotate(
+      imglib.remapColors(
+        imglib.Image.fromBytes(
+          width: image.metadata!.size.width.toInt(),
+          height: image.metadata!.size.height.toInt(),
+          bytes: image.bytes!.buffer,
+          numChannels: 4,
+          order: imglib.ChannelOrder.bgra,
+        ),
+        red: imglib.Channel.blue,
+        blue: imglib.Channel.red,
+      ),
+      angle: switch (image.metadata!.rotation) {
+        InputImageRotation.rotation0deg => 0,
+        InputImageRotation.rotation90deg => 90,
+        InputImageRotation.rotation180deg => 180,
+        InputImageRotation.rotation270deg => 270,
+      });
 }
 
 imglib.Image decodeYUV420SP(InputImage image) {
