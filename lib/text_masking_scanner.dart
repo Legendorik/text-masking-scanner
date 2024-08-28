@@ -19,6 +19,8 @@ class TextMaskingScanner extends StatefulWidget {
     this.scanDelaySuccess,
     this.formats,
     this.onControllerCreated,
+    this.loadingWidget,
+    this.overlayWidget,
     super.key,
   });
 
@@ -28,6 +30,8 @@ class TextMaskingScanner extends StatefulWidget {
   final Duration? scanDelaySuccess;
   final List<BarcodeFormat>? formats;
   final Function(CameraController? controller)? onControllerCreated;
+  final Widget? loadingWidget;
+  final Widget? overlayWidget;
 
   @override
   State<TextMaskingScanner> createState() => _TextMaskingScannerState();
@@ -66,6 +70,8 @@ class _TextMaskingScannerState extends State<TextMaskingScanner> {
           initialCameraLensDirection: _cameraLensDirection,
           onCameraLensDirectionChanged: (value) => _cameraLensDirection = value,
           onControllerCreated: widget.onControllerCreated,
+          loadingWidget: widget.loadingWidget,
+          overlayWidget: widget.overlayWidget,
         ),
         // Изображение, получаемое после конвертаций. Для дебага
         if (_processedImage != null)

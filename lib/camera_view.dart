@@ -1,9 +1,11 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
+import 'package:text_masking_scanner/scanner_overlay.dart';
 
 class CameraView extends StatefulWidget {
   const CameraView({
@@ -15,6 +17,8 @@ class CameraView extends StatefulWidget {
     this.onCameraLensDirectionChanged,
     this.initialCameraLensDirection = CameraLensDirection.back,
     this.onControllerCreated,
+    this.loadingWidget,
+    this.overlayWidget,
   }) : super(key: key);
 
   final CustomPaint? customPaint;
@@ -24,6 +28,8 @@ class CameraView extends StatefulWidget {
   final Function(CameraLensDirection direction)? onCameraLensDirectionChanged;
   final CameraLensDirection initialCameraLensDirection;
   final Function(CameraController? controller)? onControllerCreated;
+  final Widget? loadingWidget;
+  final Widget? overlayWidget;
 
   @override
   State<CameraView> createState() => _CameraViewState();
@@ -33,6 +39,8 @@ class _CameraViewState extends State<CameraView> {
   static List<CameraDescription> _cameras = [];
   CameraController? _controller;
   int _cameraIndex = -1;
+
+  static const cropPercent = 0.5;
 
   @override
   void initState() {
@@ -69,21 +77,50 @@ class _CameraViewState extends State<CameraView> {
 
   Widget _liveFeedBody() {
     if (_cameras.isEmpty) return Container();
-    if (_controller == null) return Container();
-    if (_controller?.value.isInitialized == false) return Container();
-    return ColoredBox(
-      color: Colors.black,
-      child: Stack(
-        fit: StackFit.expand,
-        children: <Widget>[
-          Center(
-            child: CameraPreview(
-              _controller!,
-              child: widget.customPaint,
+    if (_controller == null) return widget.loadingWidget ?? Container();
+    if (_controller?.value.isInitialized == false) {
+      return widget.loadingWidget ?? Container();
+    }
+    final mediaSize = MediaQuery.of(context).size;
+    final double cameraMaxSize = max(mediaSize.width, mediaSize.height);
+
+    final cropSize =
+        (min(mediaSize.width, mediaSize.height) * cropPercent).round();
+
+    return Stack(
+      children: [
+        SizedBox(
+          width: cameraMaxSize,
+          height: cameraMaxSize,
+          child: ClipRRect(
+            child: OverflowBox(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: cameraMaxSize,
+                  child: CameraPreview(
+                    _controller!,
+                    child: widget.customPaint,
+                  ),
+                ),
+              ),
             ),
           ),
-        ],
-      ),
+        ),
+        widget.overlayWidget ??
+            Container(
+              decoration: ShapeDecoration(
+                shape: ScannerOverlay(
+                  borderColor: Theme.of(context).primaryColor,
+                  overlayColor: Colors.black45,
+                  borderRadius: 1,
+                  borderLength: 16,
+                  borderWidth: 8,
+                  cutOutSize: cropSize.toDouble(),
+                ),
+              ),
+            ),
+      ],
     );
   }
 
